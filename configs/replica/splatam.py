@@ -7,13 +7,13 @@ scenes = ["room0", "room1", "room2",
 
 primary_device="cuda:0"
 seed = 0
-scene_name = scenes[0]
+scene_name = scenes[1]
 
 map_every = 1
 keyframe_every = 5
 mapping_window_size = 24
 tracking_iters = 40
-mapping_iters = 60
+mapping_iters = 30
 
 group_name = "Replica"
 run_name = f"{scene_name}_{seed}"
