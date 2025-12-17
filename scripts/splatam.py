@@ -122,10 +122,21 @@ def initialize_params(init_pt_cld, num_frames, mean3_sq_dist, gaussian_distribut
     means3D = init_pt_cld[:, :3] # [num_gaussians, 3]
     unnorm_rots = np.tile([1, 0, 0, 0], (num_pts, 1)) # [num_gaussians, 4]
     logit_opacities = torch.zeros((num_pts, 1), dtype=torch.float, device="cuda")
+    # [IsoGS] Force 3D (anisotropic) initialization for flatness regularization
+    # Even if config says "isotropic", we initialize as 3D with small random perturbation
+    base_log_scale = torch.log(torch.sqrt(mean3_sq_dist))[..., None]  # [num_pts, 1]
     if gaussian_distribution == "isotropic":
-        log_scales = torch.tile(torch.log(torch.sqrt(mean3_sq_dist))[..., None], (1, 1))
+        # Convert to 3D by tiling and adding small random perturbation to break symmetry
+        # This allows flatness regularization to work even with "isotropic" config
+        log_scales_base = torch.tile(base_log_scale, (1, 3))  # [num_pts, 3]
+        # Add small random perturbation (std=0.01) to prevent identical gradients
+        perturbation = torch.randn_like(log_scales_base) * 0.01
+        log_scales = log_scales_base + perturbation
+        if not hasattr(initialize_params, '_warned_forced_3d'):
+            print("[IsoGS] Forced 3D initialization: Converting isotropic to anisotropic for flatness regularization.")
+            initialize_params._warned_forced_3d = True
     elif gaussian_distribution == "anisotropic":
-        log_scales = torch.tile(torch.log(torch.sqrt(mean3_sq_dist))[..., None], (1, 3))
+        log_scales = torch.tile(base_log_scale, (1, 3))  # [num_pts, 3]
     else:
         raise ValueError(f"Unknown gaussian_distribution {gaussian_distribution}")
     params = {
@@ -289,6 +300,160 @@ def get_loss(params, curr_data, variables, iter_time_idx, loss_weights, use_sil_
     else:
         losses['im'] = 0.8 * l1_loss_v1(im, curr_data['im']) + 0.2 * (1.0 - calc_ssim(im, curr_data['im']))
 
+    # [IsoGS] Added Flatness Constraint
+    # Get scales from log_scales
+    scales = torch.exp(params['log_scales'])
+    # [IsoGS] Clamp scales to prevent numerical underflow
+    scales = torch.clamp(scales, min=1e-5)
+    
+    # [IsoGS] Debug: Print scales shape (only once)
+    if not hasattr(get_loss, '_debug_printed'):
+        print(f"[IsoGS DEBUG] Scales shape: {scales.shape}, Gaussian distribution type: {'Isotropic' if scales.shape[1] == 1 else 'Anisotropic'}")
+        get_loss._debug_printed = True
+    
+    # Check dimensions and compute flatness loss
+    if scales.shape[1] == 3:  # Anisotropic (3D)
+        # Compute the minimum axis (smallest scale) for each Gaussian and take mean
+        loss_flat = torch.mean(torch.min(scales, dim=1).values)
+        losses['flat'] = loss_flat
+        # [IsoGS] Compute mean max scale for monitoring
+        mean_max_scale = torch.mean(torch.max(scales, dim=1).values)
+        # [IsoGS] Debug print with frequency control (every 60 calls)
+        if not hasattr(get_loss, '_debug_call_count'):
+            get_loss._debug_call_count = 0
+        get_loss._debug_call_count += 1
+        if get_loss._debug_call_count % 60 == 0:
+            print(f"[IsoGS Debug] Scales - Mean Min: {loss_flat.item():.6f} | Mean Max: {mean_max_scale.item():.6f} | Ratio: {mean_max_scale.item()/loss_flat.item():.2f}x")
+    elif scales.shape[1] == 1:  # Isotropic (1D)
+        # Skip flatness loss for isotropic Gaussians
+        losses['flat'] = torch.tensor(0.0, device=scales.device, dtype=scales.dtype)
+        # Print warning only once
+        if not hasattr(get_loss, '_warned_isotropic'):
+            print("[IsoGS Warning] Isotropic Gaussians detected. Flatness regularization skipped.")
+            print("[IsoGS Solution] Please set gaussian_distribution='anisotropic' in your config file, or use the forced 3D initialization.")
+            get_loss._warned_isotropic = True
+    else:
+        # Unexpected dimension
+        losses['flat'] = torch.tensor(0.0, device=scales.device, dtype=scales.dtype)
+        if not hasattr(get_loss, '_warned_unexpected_dim'):
+            print(f"[IsoGS Warning] Unexpected scales dimension: {scales.shape[1]}. Flatness regularization skipped.")
+            get_loss._warned_unexpected_dim = True
+
+    # [IsoGS] Iso-Surface Density Loss
+    if scales.shape[1] == 3:  # Only compute for anisotropic (3D) Gaussians
+        # Parameters
+        target_saturation = 1.0
+        sample_size = 4096
+        K = 16
+        
+        # Prepare data
+        means = params['means3D']  # [N, 3]
+        opacities = torch.sigmoid(params['logit_opacities'])  # [N, 1]
+        
+        # Build rotation matrices from quaternions
+        quats = F.normalize(params['unnorm_rotations'])  # [N, 4]
+        R = build_rotation(quats)  # [N, 3, 3]
+        
+        # Build scaling matrices (diagonal)
+        # scales is already [N, 3] and clamped, represents [s_x, s_y, s_z] for each Gaussian
+        # Covariance matrix: Σ = R S S^T R^T, where S = diag([s_x, s_y, s_z])
+        # Since S is diagonal: S S^T = S^2 = diag([s_x^2, s_y^2, s_z^2])
+        # Inverse: Σ^{-1} = R (S S^T)^{-1} R^T = R S^{-2} R^T
+        
+        # Compute S^{-2} = diag([1/s_x^2, 1/s_y^2, 1/s_z^2])
+        S_inv_sq = 1.0 / (scales ** 2 + 1e-8)  # [N, 3], add small epsilon for numerical stability
+        S_inv_sq_diag = torch.diag_embed(S_inv_sq)  # [N, 3, 3] - diagonal matrices
+        
+        # Compute Σ^{-1} = R S^{-2} R^T using batch matrix multiplication
+        # Step 1: R @ S^{-2}: [N, 3, 3] @ [N, 3, 3] = [N, 3, 3]
+        R_S_inv_sq = torch.bmm(R, S_inv_sq_diag)  # [N, 3, 3]
+        # Step 2: (R @ S^{-2}) @ R^T: [N, 3, 3] @ [N, 3, 3] = [N, 3, 3]
+        inverse_covariances = torch.bmm(R_S_inv_sq, R.transpose(1, 2))  # [N, 3, 3]
+        
+        # Random sampling
+        num_gaussians = means.shape[0]
+        if num_gaussians >= sample_size:
+            # Random sample indices
+            sample_indices = torch.randperm(num_gaussians, device=means.device)[:sample_size]
+            query_points = means[sample_indices]  # [sample_size, 3]
+        else:
+            # If we have fewer Gaussians than sample_size, use all
+            query_points = means  # [num_gaussians, 3]
+            sample_size = num_gaussians
+        
+        # KNN search using torch.cdist
+        try:
+            # Compute distance matrix: [sample_size, N]
+            distances = torch.cdist(query_points, means)  # [sample_size, num_gaussians]
+            # Find K nearest neighbors
+            _, neighbor_indices = torch.topk(distances, k=min(K, num_gaussians), dim=1, largest=False)  # [sample_size, K]
+        except RuntimeError as e:
+            # Fallback: if OOM, process in chunks
+            if "out of memory" in str(e):
+                print(f"[IsoGS Warning] OOM in cdist, falling back to chunked computation")
+                chunk_size = 512
+                neighbor_indices_list = []
+                for i in range(0, sample_size, chunk_size):
+                    chunk_query = query_points[i:i+chunk_size]
+                    chunk_distances = torch.cdist(chunk_query, means)
+                    _, chunk_indices = torch.topk(chunk_distances, k=min(K, num_gaussians), dim=1, largest=False)
+                    neighbor_indices_list.append(chunk_indices)
+                neighbor_indices = torch.cat(neighbor_indices_list, dim=0)
+            else:
+                raise
+        
+        # Collect neighbor data
+        # neighbor_indices: [sample_size, K]
+        # Expand query_points for broadcasting: [sample_size, 1, 3]
+        query_points_expanded = query_points.unsqueeze(1)  # [sample_size, 1, 3]
+        
+        # Gather neighbor means: [sample_size, K, 3]
+        neighbor_means = means[neighbor_indices]  # [sample_indices, K, 3]
+        
+        # Compute delta vectors: [sample_size, K, 3]
+        deltas = query_points_expanded - neighbor_means  # [sample_size, K, 3]
+        
+        # Gather neighbor inverse covariances: [sample_size, K, 3, 3]
+        neighbor_inv_covs = inverse_covariances[neighbor_indices]  # [sample_size, K, 3, 3]
+        
+        # Gather neighbor opacities: [sample_size, K, 1]
+        neighbor_opacities = opacities[neighbor_indices]  # [sample_size, K, 1]
+        
+        # Compute density: D = sum(α_j * exp(-0.5 * Δ^T * Σ_j^{-1} * Δ))
+        # For each query point and each neighbor:
+        #   delta: [sample_size, K, 3]
+        #   inv_cov: [sample_size, K, 3, 3]
+        #   We need: delta^T @ inv_cov @ delta for each [sample_size, K] pair
+        
+        # Reshape for batch matrix multiplication
+        deltas_reshaped = deltas.unsqueeze(-1)  # [sample_size, K, 3, 1]
+        
+        # Compute inv_cov @ delta: [sample_size, K, 3, 3] @ [sample_size, K, 3, 1] = [sample_size, K, 3, 1]
+        inv_cov_delta = torch.matmul(neighbor_inv_covs, deltas_reshaped)  # [sample_size, K, 3, 1]
+        
+        # Compute delta^T @ (inv_cov @ delta): [sample_size, K, 1, 3] @ [sample_size, K, 3, 1] = [sample_size, K, 1, 1]
+        deltas_T = deltas.unsqueeze(-2)  # [sample_size, K, 1, 3]
+        quad_form = torch.matmul(deltas_T, inv_cov_delta).squeeze(-1).squeeze(-1)  # [sample_size, K]
+        
+        # Compute exponential: exp(-0.5 * quad_form)
+        exp_term = torch.exp(-0.5 * quad_form)  # [sample_size, K]
+        
+        # Multiply by opacities and sum over neighbors
+        neighbor_opacities_squeezed = neighbor_opacities.squeeze(-1)  # [sample_size, K]
+        density_per_neighbor = neighbor_opacities_squeezed * exp_term  # [sample_size, K]
+        density_sum = density_per_neighbor.sum(dim=1)  # [sample_size]
+        
+        # Compute loss
+        density_val = density_sum  # [sample_size]
+        loss_iso = torch.mean((density_val - target_saturation) ** 2)
+        losses['iso'] = loss_iso
+        
+        # Store mean density for monitoring (as a scalar tensor, not part of loss computation)
+        losses['mean_density'] = torch.tensor(density_val.mean().item(), device=density_val.device)
+    else:
+        # Skip for isotropic Gaussians
+        losses['iso'] = torch.tensor(0.0, device=scales.device, dtype=scales.dtype)
+
     # Visualize the Diff Images
     if tracking and visualize_tracking_loss:
         fig, ax = plt.subplots(2, 4, figsize=(12, 6))
@@ -336,13 +501,30 @@ def get_loss(params, curr_data, variables, iter_time_idx, loss_weights, use_sil_
         # plt.savefig(os.path.join(save_plot_dir, f"%04d.png" % tracking_iteration), bbox_inches='tight')
         # plt.close()
 
-    weighted_losses = {k: v * loss_weights[k] for k, v in losses.items()}
+    # [IsoGS] Ensure flatness loss weight exists with default value
+    # Increased from 0.01 to 20.0 to match the scale of RGB Loss (~5e-3)
+    # Current Flat Loss ~5e-5, so weight needs to be ~1000x to have comparable influence
+    if 'flat' not in loss_weights:
+        loss_weights['flat'] = 20.0
+    
+    # [IsoGS] Ensure iso-surface density loss weight exists with default value
+    if 'iso' not in loss_weights:
+        loss_weights['iso'] = 5.0
+
+    # [IsoGS] Filter out monitoring metrics (like 'mean_density') from loss computation
+    # Only compute weighted losses for actual loss terms
+    actual_loss_keys = ['loss', 'im', 'depth', 'flat', 'iso']
+    weighted_losses = {k: v * loss_weights.get(k, 1.0) for k, v in losses.items() if k in actual_loss_keys}
     loss = sum(weighted_losses.values())
 
     seen = radius > 0
     variables['max_2D_radius'][seen] = torch.max(radius[seen], variables['max_2D_radius'][seen])
     variables['seen'] = seen
     weighted_losses['loss'] = loss
+    
+    # [IsoGS] Copy monitoring metrics (like mean_density) to weighted_losses for reporting
+    if 'mean_density' in losses:
+        weighted_losses['mean_density'] = losses['mean_density']
 
     return loss, variables, weighted_losses
 
@@ -352,10 +534,18 @@ def initialize_new_params(new_pt_cld, mean3_sq_dist, gaussian_distribution):
     means3D = new_pt_cld[:, :3] # [num_gaussians, 3]
     unnorm_rots = np.tile([1, 0, 0, 0], (num_pts, 1)) # [num_gaussians, 4]
     logit_opacities = torch.zeros((num_pts, 1), dtype=torch.float, device="cuda")
+    # [IsoGS] Force 3D (anisotropic) initialization for flatness regularization
+    # Even if config says "isotropic", we initialize as 3D with small random perturbation
+    base_log_scale = torch.log(torch.sqrt(mean3_sq_dist))[..., None]  # [num_pts, 1]
     if gaussian_distribution == "isotropic":
-        log_scales = torch.tile(torch.log(torch.sqrt(mean3_sq_dist))[..., None], (1, 1))
+        # Convert to 3D by tiling and adding small random perturbation to break symmetry
+        # This allows flatness regularization to work even with "isotropic" config
+        log_scales_base = torch.tile(base_log_scale, (1, 3))  # [num_pts, 3]
+        # Add small random perturbation (std=0.01) to prevent identical gradients
+        perturbation = torch.randn_like(log_scales_base) * 0.01
+        log_scales = log_scales_base + perturbation
     elif gaussian_distribution == "anisotropic":
-        log_scales = torch.tile(torch.log(torch.sqrt(mean3_sq_dist))[..., None], (1, 3))
+        log_scales = torch.tile(base_log_scale, (1, 3))  # [num_pts, 3]
     else:
         raise ValueError(f"Unknown gaussian_distribution {gaussian_distribution}")
     params = {
@@ -479,6 +669,12 @@ def rgbd_slam(config: dict):
                                group=config['wandb']['group'],
                                name=config['wandb']['name'],
                                config=config)
+    else:
+        # [IsoGS] Initialize step counters even when wandb is disabled
+        wandb_time_step = 0
+        wandb_tracking_step = 0
+        wandb_mapping_step = 0
+        wandb_run = None
 
     # Get Device
     device = torch.device(config["primary_device"])
@@ -847,9 +1043,13 @@ def rgbd_slam(config: dict):
                 loss, variables, losses = get_loss(params, iter_data, variables, iter_time_idx, config['mapping']['loss_weights'],
                                                 config['mapping']['use_sil_for_loss'], config['mapping']['sil_thres'],
                                                 config['mapping']['use_l1'], config['mapping']['ignore_outlier_depth_loss'], mapping=True)
+                # [IsoGS] Report loss regardless of wandb status
                 if config['use_wandb']:
                     # Report Loss
                     wandb_mapping_step = report_loss(losses, wandb_run, wandb_mapping_step, mapping=True)
+                else:
+                    # Call report_loss with None wandb_run to enable terminal printing
+                    wandb_mapping_step = report_loss(losses, None, wandb_mapping_step, mapping=True)
                 # Backprop
                 loss.backward()
                 with torch.no_grad():

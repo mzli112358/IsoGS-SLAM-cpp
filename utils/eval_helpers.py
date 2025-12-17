@@ -82,24 +82,59 @@ def report_loss(losses, wandb_run, wandb_step, tracking=False, mapping=False):
     loss_dict = {'Loss': losses['loss'].item(),
                  'Image Loss': losses['im'].item(),
                  'Depth Loss': losses['depth'].item(),}
-    if tracking:
-        tracking_loss_dict = {}
-        for k, v in loss_dict.items():
-            tracking_loss_dict[f"Per Iteration Tracking/{k}"] = v
-        tracking_loss_dict['Per Iteration Tracking/step'] = wandb_step
-        wandb_run.log(tracking_loss_dict)
-    elif mapping:
-        mapping_loss_dict = {}
-        for k, v in loss_dict.items():
-            mapping_loss_dict[f"Per Iteration Mapping/{k}"] = v
-        mapping_loss_dict['Per Iteration Mapping/step'] = wandb_step
-        wandb_run.log(mapping_loss_dict)
-    else:
-        frame_opt_loss_dict = {}
-        for k, v in loss_dict.items():
-            frame_opt_loss_dict[f"Per Iteration Current Frame Optimization/{k}"] = v
-        frame_opt_loss_dict['Per Iteration Current Frame Optimization/step'] = wandb_step
-        wandb_run.log(frame_opt_loss_dict)
+    
+    # [IsoGS] Add Flatness Loss if it exists
+    if 'flat' in losses:
+        loss_dict['Flatness Loss'] = losses['flat'].item()
+    
+    # [IsoGS] Add Iso-Surface Density Loss if it exists
+    if 'iso' in losses:
+        loss_dict['Iso-Surface Loss'] = losses['iso'].item()
+    
+    # Log to wandb if available
+    if wandb_run is not None:
+        if tracking:
+            tracking_loss_dict = {}
+            for k, v in loss_dict.items():
+                tracking_loss_dict[f"Per Iteration Tracking/{k}"] = v
+            tracking_loss_dict['Per Iteration Tracking/step'] = wandb_step
+            wandb_run.log(tracking_loss_dict)
+        elif mapping:
+            mapping_loss_dict = {}
+            for k, v in loss_dict.items():
+                mapping_loss_dict[f"Per Iteration Mapping/{k}"] = v
+            mapping_loss_dict['Per Iteration Mapping/step'] = wandb_step
+            wandb_run.log(mapping_loss_dict)
+        else:
+            frame_opt_loss_dict = {}
+            for k, v in loss_dict.items():
+                frame_opt_loss_dict[f"Per Iteration Current Frame Optimization/{k}"] = v
+            frame_opt_loss_dict['Per Iteration Current Frame Optimization/step'] = wandb_step
+            wandb_run.log(frame_opt_loss_dict)
+    
+    # [IsoGS] Print to terminal regardless of wandb status (with frequency control)
+    if wandb_step % 10 == 0:
+        stage = "Tracking" if tracking else ("Mapping" if mapping else "Optimization")
+        flat_val = losses.get('flat', torch.tensor(0.0))
+        if isinstance(flat_val, torch.Tensor):
+            flat_val = flat_val.item()
+        iso_val = losses.get('iso', torch.tensor(0.0))
+        if isinstance(iso_val, torch.Tensor):
+            iso_val = iso_val.item()
+        
+        # Get mean density for monitoring
+        mean_density_str = ""
+        mean_density_val = losses.get('mean_density', None)
+        if mean_density_val is not None:
+            if isinstance(mean_density_val, torch.Tensor):
+                mean_density = mean_density_val.item()
+            else:
+                mean_density = mean_density_val
+            mean_density_str = f" | Mean Density: {mean_density:.4f}"
+        
+        print(f"[{stage}] Step: {wandb_step} | Total: {loss_dict['Loss']:.4f} | "
+              f"RGB: {loss_dict['Image Loss']:.4f} | Depth: {loss_dict['Depth Loss']:.4f} | "
+              f"Flat: {flat_val:.6f} | Iso: {iso_val:.6f}{mean_density_str}")
     
     # Increment wandb step
     wandb_step += 1

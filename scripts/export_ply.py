@@ -1,4 +1,5 @@
 import os
+import re
 import argparse
 from importlib.machinery import SourceFileLoader
 
@@ -58,7 +59,34 @@ if __name__ == "__main__":
     config = experiment.config
     work_path = config['workdir']
     run_name = config['run_name']
-    params_path = os.path.join(work_path, run_name, "params.npz")
+    result_dir = os.path.join(work_path, run_name)
+    
+    # Check if params.npz exists (final result)
+    params_npz_path = os.path.join(result_dir, "params.npz")
+    
+    if os.path.exists(params_npz_path):
+        params_path = params_npz_path
+        print(f"Found final params file: {params_path}")
+    else:
+        # Find the latest checkpoint file (params{数字}.npz)
+        pattern = re.compile(r'^params(\d+)\.npz$')
+        checkpoint_files = []
+        
+        if os.path.exists(result_dir):
+            for filename in os.listdir(result_dir):
+                match = pattern.match(filename)
+                if match:
+                    checkpoint_num = int(match.group(1))
+                    checkpoint_files.append((checkpoint_num, filename))
+        
+        if checkpoint_files:
+            # Sort by checkpoint number and get the latest
+            checkpoint_files.sort(key=lambda x: x[0], reverse=True)
+            latest_checkpoint = checkpoint_files[0]
+            params_path = os.path.join(result_dir, latest_checkpoint[1])
+            print(f"Found latest checkpoint file: {params_path} (frame {latest_checkpoint[0]})")
+        else:
+            raise FileNotFoundError(f"No params file found in {result_dir}. Please check if the experiment has been run.")
 
     params = dict(np.load(params_path, allow_pickle=True))
     means = params['means3D']
@@ -67,6 +95,14 @@ if __name__ == "__main__":
     rgbs = params['rgb_colors']
     opacities = params['logit_opacities']
 
-    ply_path = os.path.join(work_path, run_name, "splat.ply")
+    # Generate output PLY filename based on input
+    if params_path.endswith("params.npz"):
+        ply_filename = "splat.ply"
+    else:
+        # Extract checkpoint number from filename
+        checkpoint_num = os.path.basename(params_path).replace("params", "").replace(".npz", "")
+        ply_filename = f"splat_{checkpoint_num}.ply"
+    
+    ply_path = os.path.join(result_dir, ply_filename)
 
     save_ply(ply_path, means, scales, rotations, rgbs, opacities)

@@ -1,5 +1,6 @@
 import argparse
 import os
+import re
 import sys
 from importlib.machinery import SourceFileLoader
 
@@ -292,7 +293,33 @@ if __name__ == "__main__":
         results_dir = os.path.join(
             experiment.config["workdir"], experiment.config["run_name"]
         )
-        scene_path = os.path.join(results_dir, "params.npz")
+        
+        # Check if params.npz exists (final result)
+        params_npz_path = os.path.join(results_dir, "params.npz")
+        
+        if os.path.exists(params_npz_path):
+            scene_path = params_npz_path
+            print(f"Found final params file: {scene_path}")
+        else:
+            # Find the latest checkpoint file (params{数字}.npz)
+            pattern = re.compile(r'^params(\d+)\.npz$')
+            checkpoint_files = []
+            
+            if os.path.exists(results_dir):
+                for filename in os.listdir(results_dir):
+                    match = pattern.match(filename)
+                    if match:
+                        checkpoint_num = int(match.group(1))
+                        checkpoint_files.append((checkpoint_num, filename))
+            
+            if checkpoint_files:
+                # Sort by checkpoint number and get the latest
+                checkpoint_files.sort(key=lambda x: x[0], reverse=True)
+                latest_checkpoint = checkpoint_files[0]
+                scene_path = os.path.join(results_dir, latest_checkpoint[1])
+                print(f"Found latest checkpoint file: {scene_path} (frame {latest_checkpoint[0]})")
+            else:
+                raise FileNotFoundError(f"No params file found in {results_dir}. Please check if the experiment has been run.")
     else:
         scene_path = experiment.config["scene_path"]
     viz_cfg = experiment.config["viz"]
