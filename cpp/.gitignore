@@ -1,0 +1,107 @@
+# ============================================
+# C++ Build Files
+# ============================================
+build/
+*.o
+*.so
+*.a
+*.exe
+*.dll
+*.dylib
+
+# Executables
+isogs_slam
+gaussian_splatting
+export_ply
+grad_check
+post_splatam_opt
+
+# CMake files
+CMakeCache.txt
+CMakeFiles/
+*.cmake
+!cmake/*.cmake
+cmake_install.cmake
+install_manifest.txt
+compile_commands.json
+CTestTestfile.cmake
+CMakeOutput.log
+CMakeError.log
+progress.marks
+_deps/
+
+# ============================================
+# CUDA Compilation Artifacts
+# ============================================
+*.ptx
+*.cubin
+*.fatbin
+*.cu.o
+*.cu.obj
+
+# CUDA detection files
+detect_cuda_compute_capabilities.cu
+detect_cuda_version.cc
+
+# ============================================
+# Checkpoints and Model Files
+# ============================================
+checkpoints/
+build/checkpoints/
+output/
+*.npz
+*.ckpt
+*.pth
+*.pt
+*.ply
+*.stl
+*.obj
+*.mesh
+
+# ============================================
+# Third-party Build Artifacts
+# ============================================
+third_party/build/
+third_party/CMakeFiles/
+third_party/*.a
+third_party/*.so
+third_party/*.lib
+third_party/cmake_install.cmake
+third_party/Makefile
+
+# ============================================
+# IDE and Editor Files
+# ============================================
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# ============================================
+# Logs and Temporary Files
+# ============================================
+*.log
+*.tmp
+*.temp
+*.bak
+*.backup
+
+# ============================================
+# Additional Output Files
+# ============================================
+*.npy
+*.bin
+*.h5
+*.pb
+*.onnx
+
+# ============================================
+# Coverage and Testing
+# ============================================
+*.gcda
+*.gcno
+*.gcov
+coverage/
+test-results/

@@ -1,3 +1,9 @@
 [submodule "diff-gaussian-rasterization-w-depth.git"]
 	path = diff-gaussian-rasterization-w-depth.git
 	url = git@github.com:JonathonLuiten/diff-gaussian-rasterization-w-depth.git
+[submodule "cpp/third_party/gsplat"]
+	path = cpp/third_party/gsplat
+	url = https://github.com/nerfstudio-project/gsplat.git
+[submodule "cpp/third_party/cnpy"]
+	path = cpp/third_party/cnpy
+	url = https://github.com/rogersce/cnpy.git

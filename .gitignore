@@ -1,9 +1,16 @@
+# ============================================
 # Sub-Directories
+# ============================================
 configs/local
 data/
+data/**/*
+!data/.gitkeep
 experiments/
 results/
 wandb/
+checkpoints/
+output/
+outputs/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
@@ -165,3 +172,171 @@ cython_debug/
 #  and can be added to the global gitignore or merged into this file.  For a more nuclear
 #  option (not recommended) you can uncomment the following to ignore the entire idea folder.
 #.idea/
+
+# ============================================
+# Project Specific Ignores
+# ============================================
+
+# Third-party libraries (large binary files)
+cpp/third_party/libtorch/
+cpp/third_party/libtorch.zip
+cpp/third_party/gsplat/build/
+cpp/third_party/gsplat/dist/
+cpp/third_party/gsplat/*.egg-info/
+cpp/third_party/gsplat/.eggs/
+
+# C++ Build files
+cpp/build/
+cpp/build/checkpoints/
+cpp/build/output/
+cpp/*.o
+cpp/*.so
+cpp/*.a
+cpp/*.exe
+cpp/CMakeCache.txt
+cpp/CMakeFiles/
+cpp/*.cmake
+!cpp/cmake/*.cmake
+cpp/install_manifest.txt
+cpp/compile_commands.json
+cpp/CTestTestfile.cmake
+cpp/_deps/
+cpp/checkpoints/
+cpp/*.npz
+cpp/*.ply
+cpp/*.stl
+
+# CUDA compilation artifacts
+*.ptx
+*.cubin
+*.fatbin
+
+# IDE and Editor files
+.vscode/
+.idea/
+.cursor/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Checkpoints and model files
+*.ckpt
+*.pth
+*.pt
+checkpoints/
+*.npz
+
+# Logs and temporary files
+*.log
+*.tmp
+*.temp
+logs/
+tmp/
+temp/
+
+# Data files (ensure all data files are ignored)
+# Note: data/ is already ignored above, but adding specific patterns for clarity
+data/**/*.zip
+data/**/*.tar.gz
+data/**/*.tar
+data/**/*.ply
+data/**/*.stl
+data/**/*.obj
+data/**/*.mesh
+data/**/*.bin
+data/**/*.npy
+data/**/*.npz
+
+# Python output files
+python_ordinary/__pycache__/
+python_ordinary/**/__pycache__/
+python_ordinary/*.pyc
+python_ordinary/.pytest_cache/
+python_ordinary/.mypy_cache/
+python_ordinary/data/
+python_ordinary/experiments/
+python_ordinary/outputs/
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# ============================================
+# Additional Project Files
+# ============================================
+
+# Output directories
+output/
+outputs/
+results/
+renders/
+visualizations/
+
+# Git submodules (keep .gitmodules but ignore submodule contents if needed)
+# Uncomment if you want to ignore submodule contents:
+# cpp/third_party/gsplat/
+# cpp/third_party/cnpy/
+
+# Backup files
+*.bak
+*.backup
+*~
+
+# OS specific files
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# Python virtual environments (additional patterns)
+.venv/
+venv*/
+ENV/
+env/
+
+# Python package files
+*.egg
+*.egg-info/
+dist/
+build/
+*.whl
+
+# Coverage and testing
+.coverage
+.coverage.*
+htmlcov/
+.pytest_cache/
+.tox/
+.hypothesis/
+
+# Documentation builds
+docs/_build/
+docs/.doctrees/
+site/
+
+# Model and checkpoint files (additional patterns)
+models/
+weights/
+*.h5
+*.pb
+*.onnx
+*.tflite
+
+# Large media files
+*.mp4
+*.avi
+*.mov
+*.mkv
+*.gif
+!python_ordinary/assets/*.gif  # Keep specific assets if needed
+
+# Archive files
+*.7z
+*.rar
+*.bz2
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
